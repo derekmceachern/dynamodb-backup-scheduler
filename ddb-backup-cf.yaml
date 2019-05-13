@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: DynamoDB Backup using Lambda Function
+Parameters:
+  LambdaFunctionName:
+    Description: Lambda function Name
+    Type: String
+  BucketName:
+    Description: S3 Bucket where Backup Code Resides
+    Type: String
+  FileName:
+    Description: Zip file that Contains Lambda Function
+    Type: String
+    Default: "ddb-backup/ddbbackup.1.0.0.zip"
+  DDBTableName:
+    Description: Name of DynamoDB Table to Backup
+    Type: String
+  BackupRetention:
+    Description: Number of Days to Keep Backup?
+    Type: Number
+    MinValue: 1
+    Default: 7
+  MinimumNumberBackups:
+    Description: Minimum Number of Backups to Retain
+    Type: Number
+    MinValue: 1
+    MaxValue: 50
+    Default: 3
+  BackupHour:
+    Description: Hour to run Backup? (GMT)
+    Type: String
+    Default: "9"
+    AllowedValues:
+      - "0"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "11"
+      - "12"
+      - "13"
+      - "14"
+      - "15"
+      - "16"
+      - "17"
+      - "18"
+      - "19"
+      - "20"
+      - "21"
+      - "22"
+      - "23"
+  Project:
+    Description: Project Backup is Related to
+    Type: String
+    Default: Jack
+    AllowedValues:
+      - Jack
+      - Other
+  Environment:
+    Description: Project Environment
+    Type: String
+    Default: Prod
+    AllowedValues:
+      - Dev
+      - Prod
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - 
+        Label: 
+          default: "Lambda Function"
+        Parameters:
+          - LambdaFunctionName
+          - BucketName
+          - FileName
+      - 
+        Label: 
+          default: "DynamoDB Table to Backup"
+        Parameters:
+          - DDBTableName
+          - BackupRetention
+          - MinimumNumberBackups
+      -
+        Label:
+          default: Backup Times
+        Parameters:
+          - BackupHour
+      -
+        Label:
+          default: "Tags"
+        Parameters:
+          - Environment
+          - Project
+Resources:
+  LambdaServiceExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  LambdaServiceExecutionRolePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "LambdaFunctionLambdaRolePolicy"
+      Roles: 
+        - !Ref LambdaServiceExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource:
+              - "Fn::Join":
+                  - ""
+                  -
+                    - "arn:aws:logs:"
+                    - !Ref "AWS::Region"
+                    - ":"
+                    - !Ref "AWS::AccountId"
+                    - ":log-group:/aws/lambda/"
+                    - !Ref "LambdaFunction"
+                    - ":*"
+          - Effect: Allow
+            Action:
+              - "dynamodb:CreateBackup"
+            Resource:
+              - "Fn::Join":
+                - ""
+                -
+                  - "arn:aws:dynamodb:"
+                  - !Ref "AWS::Region"
+                  - ":"
+                  - !Ref AWS::AccountId
+                  - ":table/"
+                  - !Ref "DDBTableName"
+          - Effect: Allow
+            Action:
+              - "dynamodb:DeleteBackup"
+            Resource:
+              - "Fn::Join":
+                - ""
+                -
+                  - "arn:aws:dynamodb:"
+                  - !Ref "AWS::Region"
+                  - ":"
+                  - !Ref AWS::AccountId
+                  - ":table/"
+                  - !Ref "DDBTableName"
+                  - "/*"
+          - Effect: Allow
+            Action:
+              - "dynamodb:ListBackups"
+            Resource:
+              - "*"
+  ScheduledEvent:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "Cloudwatch Event to Trigger Lambda Event to Backup for DynamoDB Table"
+      ScheduleExpression:
+        "Fn::Join":
+          - " "
+          -
+            - "cron(0"
+            - !Ref BackupHour
+            - "* * ? *)"
+      State: "ENABLED"
+      Targets:
+        -
+          Arn: !GetAtt LambdaFunction.Arn
+          Id: "DDBTarget"
+  LambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt ScheduledEvent.Arn
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "Lambda Function for Backing Up DynamoDB Table"
+      Code:
+        S3Bucket: !Ref BucketName
+        S3Key: !Ref FileName
+      FunctionName: !Ref LambdaFunctionName
+      Handler: "ddbbackup.lambda_handler"
+      MemorySize: 128
+      Runtime: "python3.6"
+      Timeout: 300
+      Role: !GetAtt LambdaServiceExecutionRole.Arn
+      Environment:
+        Variables:
+          "DDBTable": !Ref DDBTableName
+          "BackupRetention": !Ref BackupRetention
+          "MinimumNumberBackups": !Ref MinimumNumberBackups
+      Tags:
+        -
+          Key: "environment"
+          Value: !Ref Environment
+        -
+          Key: "project"
+          Value: !Ref Project
+
+  LambdaLogStream:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: 
+        "Fn::Join":
+          - ""
+          -
+            - "/aws/lambda/"
+            - !Ref "LambdaFunction"
+      RetentionInDays: 14
